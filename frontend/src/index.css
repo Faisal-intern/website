@@ -1,0 +1,71 @@
+@font-face {
+  font-family: 'Old English Text MT';
+  src: url('/fonts/OldEnglishTextMT.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Arya';
+  src: url('/fonts/Arya-Bold.ttf') format('truetype');
+  font-weight: bold;
+}
+
+@font-face {
+  font-family: 'Kokila';
+  src: url('/fonts/Kokila.ttf') format('truetype');
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .certificate-container, .certificate-container * {
+    visibility: visible;
+  }
+  .certificate-container {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 210mm;
+    height: 297mm;
+  }
+  @page {
+    size: A4;
+    margin: 0;
+  }
+} 
+
+.font-old-english {
+  font-family: 'Old English Text MT', serif;
+}
+
+.font-arya {
+  font-family: 'Arya', sans-serif;
+}
+
+.font-kokila {
+  font-family: 'Kokila', sans-serif;
+}
+
+.font-tahoma {
+  font-family: Tahoma, sans-serif;
+}
+
+@layer components {
+  .font-signature {
+    font-family: 'Dancing Script', cursive;
+  }
+}
+
+/* Added by request: installation nudge styles */
+.cc-install-nudge { container-type: inline-size; }
+@keyframes ccInstallNudgeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@container (max-width: 450px) {
+  .cc-install-nudge-icon { display: none; }
+} 
