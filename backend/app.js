@@ -13,6 +13,10 @@ app.use(express.json());
 
 // Mount routes
 app.use('/api/search', require('./routes/searchRoutes'));
+app.use('/api/student', require('./routes/studentRoutes'));
+app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/teacher', require('./routes/teacherRoutes'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
