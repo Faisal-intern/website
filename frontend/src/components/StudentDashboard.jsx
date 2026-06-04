@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import CertificateTemplate from './CertificateTemplate';
 import StudentHeader from './StudentHeader';
 import vmiLogo from '../assets/Header2VMILogo.avif';
-import html2pdf from "html2pdf.js"; 
+import html2pdf from "html2pdf.js";
 import ResultSearch from './ResultDec';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
@@ -21,7 +21,7 @@ const StudentDashboard = () => {
   useEffect(() => {
     const token = localStorage.getItem('studentToken');
     const storedStudentInfo = localStorage.getItem('studentInfo');
-    
+
     if (!token) {
       navigate('/student/login');
       return;
@@ -72,13 +72,13 @@ const StudentDashboard = () => {
           'Content-Type': 'application/json',
         },
       });
-  
+
       if (response.status === 401) {
         logoutStudent();
         navigate('/student/login');
         return;
       }
-  
+
       if (response.ok) {
         const data = await response.json();
         setSelectedResult(data);
@@ -100,7 +100,6 @@ const StudentDashboard = () => {
 
       const candidateName = selectedResult?.rollNo || "Certificate";
 
-      // Create loading spinner
       const loadingSpinner = document.createElement('div');
       loadingSpinner.className = "fixed inset-0 z-[100] flex items-center justify-center bg-black/20 backdrop-blur-[2px]";
       loadingSpinner.innerHTML = `
@@ -115,18 +114,21 @@ const StudentDashboard = () => {
       const opt = {
         margin: 0,
         filename: `${candidateName}_Certificate.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
+        image: { type: 'jpeg', quality: 0.95 },
         html2canvas: {
-          scale: 2,
+          scale: 3,
           useCORS: true,
+          allowTaint: true,
           letterRendering: true,
           logging: false,
-          scrollY: 0
+          scrollX: 0,
+          scrollY: -window.scrollY,
         },
         jsPDF: {
           unit: 'mm',
           format: 'a4',
-          orientation: 'portrait'
+          orientation: 'portrait',
+          compress: true,
         },
         pagebreak: { mode: ['avoid-all'] }
       };
@@ -165,12 +167,12 @@ const StudentDashboard = () => {
   return (
     <div className="min-h-screen bg-gray-50">
       <StudentHeader />
-      
+
       <nav className="bg-gradient-to-r from-green-800 via-green-700 to-green-800 p-2 shadow-lg border-b border-white/20 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex flex-row justify-between items-center">
             <div className="flex space-x-6">
-              <button 
+              <button
                 onClick={() => setShowDeclaredResults(false)}
                 className={`text-white hover:text-green-200 transition-colors flex items-center gap-2 text-sm ${!showDeclaredResults ? 'font-bold underline' : ''}`}
               >
@@ -179,7 +181,7 @@ const StudentDashboard = () => {
                 </svg>
                 Dashboard
               </button>
-              <button 
+              <button
                 onClick={() => setShowDeclaredResults(true)}
                 className={`text-white hover:text-green-200 transition-colors flex items-center gap-2 text-sm ${showDeclaredResults ? 'font-bold underline' : ''}`}
               >
@@ -205,7 +207,7 @@ const StudentDashboard = () => {
       <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
         {showDeclaredResults ? (
           <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-100">
-             <ResultSearch />
+            <ResultSearch />
           </div>
         ) : (
           <div className="space-y-6">
@@ -307,7 +309,7 @@ const StudentDashboard = () => {
             </div>
 
             {/* Certificates Section */}
-            {results.some(result => 
+            {results.some(result =>
               !["r.a.", "result awaited", "ab", "absent", "e.r.", "essential repeat", "ra", "a.b.", "r.a", "a.b", "e.r", "er", "failed"]
                 .includes(result.resultRemarkEnglish?.toLowerCase().trim())
             ) && (
@@ -322,13 +324,13 @@ const StudentDashboard = () => {
                 </div>
                 <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {results
-                    .filter(result => 
+                    .filter(result =>
                       !["r.a.", "result awaited", "ab", "absent", "e.r.", "essential repeat", "ra", "a.b.", "r.a", "a.b", "e.r", "er", "failed"]
                         .includes(result.resultRemarkEnglish?.toLowerCase().trim())
                     )
                     .map((result) => {
                       const isExpired = result.issuedAt && (new Date() - new Date(result.issuedAt)) / (1000 * 60 * 60 * 24) > 180;
-                      
+
                       return (
                         <div key={result._id} className="border border-gray-100 rounded-lg p-4 bg-gray-50 flex flex-col justify-between hover:border-green-300 transition-colors">
                           <div>
@@ -344,7 +346,7 @@ const StudentDashboard = () => {
                               {result.issuedAt ? `Issued: ${new Date(result.issuedAt).toLocaleDateString()}` : `Result Date: ${result.dateOfResultEnglish}`}
                             </p>
                           </div>
-                          
+
                           {isExpired ? (
                             <div className="text-center p-2 bg-amber-50 border border-amber-100 rounded-md text-amber-700 text-[11px] font-medium">
                               Download period expired (180 days limit)
@@ -384,7 +386,7 @@ const StudentDashboard = () => {
       {/* Certificate Modal */}
       {selectedResult && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
-          <div className="bg-white rounded-xl w-full max-h-[95vh] overflow-y-auto mx-auto shadow-2xl" 
+          <div className="bg-white rounded-xl w-full max-h-[95vh] overflow-y-auto mx-auto shadow-2xl"
                style={{ maxWidth: 'min(95vw, 1000px)' }}>
             <div className="sticky top-0 bg-white border-b border-gray-100 p-4 sm:p-5 z-50 flex flex-col sm:flex-row justify-between items-center gap-4">
               <h3 className="text-lg font-bold text-gray-800">Certificate Preview</h3>
@@ -425,4 +427,4 @@ const StudentDashboard = () => {
   );
 };
 
-export default StudentDashboard; 
+export default StudentDashboard;

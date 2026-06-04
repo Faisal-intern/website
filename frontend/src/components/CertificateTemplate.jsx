@@ -38,7 +38,7 @@ const CertificateTemplate = ({ certificateData }) => {
 
         .cert-page {
           width: 210mm;
-          height: 297mm;
+          height: auto;
           margin: 0 auto;
           background: white;
           box-sizing: border-box;
@@ -49,7 +49,7 @@ const CertificateTemplate = ({ certificateData }) => {
 
         .cert-inner {
           width: 100%;
-          height: 100%;
+          height: auto;
           box-sizing: border-box;
           padding: 12mm 14mm 10mm 14mm;
           position: relative;
