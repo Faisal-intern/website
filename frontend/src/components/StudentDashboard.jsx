@@ -3,7 +3,6 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import CertificateTemplate from './CertificateTemplate';
 import StudentHeader from './StudentHeader';
-import vmiLogo from '../assets/Header2VMILogo.avif';
 import html2pdf from "html2pdf.js";
 import ResultSearch from './ResultDec';
 
@@ -21,41 +20,21 @@ const StudentDashboard = () => {
   useEffect(() => {
     const token = localStorage.getItem('studentToken');
     const storedStudentInfo = localStorage.getItem('studentInfo');
-
-    if (!token) {
-      navigate('/student/login');
-      return;
-    }
-
+    if (!token) { navigate('/student/login'); return; }
     if (!student?.name && storedStudentInfo) {
-      const studentData = JSON.parse(storedStudentInfo);
-      updateStudent(studentData);
+      updateStudent(JSON.parse(storedStudentInfo));
     }
-
     fetchResults(token);
   }, [navigate, student, updateStudent]);
 
   const fetchResults = async (token) => {
     try {
       const response = await fetch(`${API_URL}/api/student/results`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
-
-      if (response.status === 401) {
-        logoutStudent();
-        navigate('/student/login');
-        return;
-      }
-
+      if (response.status === 401) { logoutStudent(); navigate('/student/login'); return; }
       const data = await response.json();
-      if (response.ok) {
-        setResults(data);
-      } else {
-        setError(data.message);
-      }
+      if (response.ok) { setResults(data); } else { setError(data.message); }
     } catch (error) {
       setError('Failed to fetch results');
     } finally {
@@ -67,18 +46,9 @@ const StudentDashboard = () => {
     try {
       const token = localStorage.getItem('studentToken');
       const response = await fetch(`${API_URL}/api/student/certificate/${resultId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
-
-      if (response.status === 401) {
-        logoutStudent();
-        navigate('/student/login');
-        return;
-      }
-
+      if (response.status === 401) { logoutStudent(); navigate('/student/login'); return; }
       if (response.ok) {
         const data = await response.json();
         setSelectedResult(data);
@@ -93,10 +63,7 @@ const StudentDashboard = () => {
   const handlePrintCertificate = async () => {
     try {
       const printableContent = document.getElementById("printableContent");
-      if (!printableContent) {
-        alert("No content to print!");
-        return;
-      }
+      if (!printableContent) { alert("No content to print!"); return; }
 
       const candidateName = selectedResult?.rollNo || "Certificate";
 
@@ -111,22 +78,42 @@ const StudentDashboard = () => {
       `;
       document.body.appendChild(loadingSpinner);
 
+      // Preload fonts
+      await document.fonts.ready;
+      const fontFaces = [
+        new FontFace('Old English Text MT', 'url(/fonts/oldenglishtextmt.ttf)'),
+        new FontFace('Kokila', 'url(/fonts/Kokila.ttf)'),
+        new FontFace('Arya', 'url(/fonts/Arya-Bold.ttf)', { weight: 'bold' }),
+      ];
+      await Promise.all(fontFaces.map(f => f.load().then(loaded => document.fonts.add(loaded)).catch(() => {})));
+      await new Promise(r => setTimeout(r, 500));
+
+      // Capture exact content height to eliminate blank space
+      const contentHeight = printableContent.scrollHeight;
+      const contentWidth = printableContent.scrollWidth;
+      const mmHeight = (contentHeight * 25.4) / 96;
+      const mmWidth = (contentWidth * 25.4) / 96;
+
       const opt = {
         margin: 0,
         filename: `${candidateName}_Certificate.pdf`,
-        image: { type: 'jpeg', quality: 0.95 },
+        image: { type: 'jpeg', quality: 0.93 },
         html2canvas: {
-          scale: 3,
+          scale: 4,
           useCORS: true,
           allowTaint: true,
           letterRendering: true,
           logging: false,
           scrollX: 0,
-          scrollY: -window.scrollY,
+          scrollY: 0,
+          width: contentWidth,
+          height: contentHeight,
+          windowWidth: contentWidth,
+          backgroundColor: '#ffffff',
         },
         jsPDF: {
           unit: 'mm',
-          format: 'a4',
+          format: [mmWidth, mmHeight],
           orientation: 'portrait',
           compress: true,
         },
@@ -153,16 +140,15 @@ const StudentDashboard = () => {
     }
   };
 
-  const handleLogout = () => {
-    logoutStudent();
-    navigate('/student/login');
-  };
+  const handleLogout = () => { logoutStudent(); navigate('/student/login'); };
 
   if (loading) return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
     </div>
   );
+
+  const failedStatuses = ["r.a.", "result awaited", "ab", "absent", "e.r.", "essential repeat", "ra", "a.b.", "r.a", "a.b", "e.r", "er", "failed"];
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -172,19 +158,15 @@ const StudentDashboard = () => {
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex flex-row justify-between items-center">
             <div className="flex space-x-6">
-              <button
-                onClick={() => setShowDeclaredResults(false)}
-                className={`text-white hover:text-green-200 transition-colors flex items-center gap-2 text-sm ${!showDeclaredResults ? 'font-bold underline' : ''}`}
-              >
+              <button onClick={() => setShowDeclaredResults(false)}
+                className={`text-white hover:text-green-200 transition-colors flex items-center gap-2 text-sm ${!showDeclaredResults ? 'font-bold underline' : ''}`}>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
                 </svg>
                 Dashboard
               </button>
-              <button
-                onClick={() => setShowDeclaredResults(true)}
-                className={`text-white hover:text-green-200 transition-colors flex items-center gap-2 text-sm ${showDeclaredResults ? 'font-bold underline' : ''}`}
-              >
+              <button onClick={() => setShowDeclaredResults(true)}
+                className={`text-white hover:text-green-200 transition-colors flex items-center gap-2 text-sm ${showDeclaredResults ? 'font-bold underline' : ''}`}>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                 </svg>
@@ -193,12 +175,7 @@ const StudentDashboard = () => {
             </div>
             <div className="flex items-center gap-4">
               <span className="hidden sm:block text-white text-sm">Welcome, <span className="font-semibold">{student?.name}</span></span>
-              <button
-                onClick={handleLogout}
-                className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-xs transition duration-150"
-              >
-                Logout
-              </button>
+              <button onClick={handleLogout} className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-xs transition duration-150">Logout</button>
             </div>
           </div>
         </div>
@@ -211,7 +188,6 @@ const StudentDashboard = () => {
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Student Info Card */}
             <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div className="flex items-center gap-4">
                 <div className="h-16 w-16 bg-green-100 rounded-full flex items-center justify-center text-green-700 text-2xl font-bold">
@@ -234,12 +210,10 @@ const StudentDashboard = () => {
               </div>
             </div>
 
-            {/* Results Section */}
             <div className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-100">
               <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
                 <h3 className="text-lg font-bold text-gray-800">Your Academic Results</h3>
               </div>
-
               {error ? (
                 <div className="p-6 text-center text-red-500 bg-red-50">{error}</div>
               ) : results.length > 0 ? (
@@ -256,38 +230,30 @@ const StudentDashboard = () => {
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
                       {results.map((result) => {
-                        const isPassed = !["r.a.", "result awaited", "ab", "absent", "e.r.", "essential repeat", "ra", "a.b.", "r.a", "a.b", "e.r", "er", "failed"]
-                          .includes(result.resultRemarkEnglish?.toLowerCase().trim());
+                        const isPassed = !failedStatuses.includes(result.resultRemarkEnglish?.toLowerCase().trim());
                         const isExpired = result.issuedAt && (new Date() - new Date(result.issuedAt)) / (1000 * 60 * 60 * 24) > 180;
-
                         return (
                           <tr key={result._id} className="hover:bg-gray-50 transition-colors">
                             <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{result.subject}</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{result.marksTotal}</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{result.maxMarks}</td>
                             <td className="px-6 py-4 whitespace-nowrap">
-                              <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
-                                !isPassed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"
-                              }`}>
+                              <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${!isPassed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>
                                 {result.resultRemarkEnglish}
                               </span>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                              {isPassed && (
-                                isExpired ? (
-                                  <span className="text-amber-600 text-[10px] font-medium">Period ended</span>
-                                ) : (
-                                  <button
-                                    onClick={() => handleDownloadCertificate(result._id)}
-                                    className="text-blue-600 hover:text-blue-800 font-medium inline-flex items-center gap-1"
-                                  >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
-                                    Download
-                                  </button>
-                                )
-                              )}
+                              {isPassed && (isExpired ? (
+                                <span className="text-amber-600 text-[10px] font-medium">Period ended</span>
+                              ) : (
+                                <button onClick={() => handleDownloadCertificate(result._id)}
+                                  className="text-blue-600 hover:text-blue-800 font-medium inline-flex items-center gap-1">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                  </svg>
+                                  Download
+                                </button>
+                              ))}
                             </td>
                           </tr>
                         );
@@ -297,22 +263,16 @@ const StudentDashboard = () => {
                 </div>
               ) : (
                 <div className="p-12 text-center text-gray-500">
-                  <div className="mb-4">
-                    <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                  </div>
+                  <svg className="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
                   <p className="text-lg">No results found for your account.</p>
                   <p className="text-sm">Please contact the administrator if you believe this is an error.</p>
                 </div>
               )}
             </div>
 
-            {/* Certificates Section */}
-            {results.some(result =>
-              !["r.a.", "result awaited", "ab", "absent", "e.r.", "essential repeat", "ra", "a.b.", "r.a", "a.b", "e.r", "er", "failed"]
-                .includes(result.resultRemarkEnglish?.toLowerCase().trim())
-            ) && (
+            {results.some(r => !failedStatuses.includes(r.resultRemarkEnglish?.toLowerCase().trim())) && (
               <div className="bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden">
                 <div className="px-6 py-4 bg-green-50 border-b border-green-100">
                   <h3 className="text-lg font-bold text-green-800 flex items-center gap-2">
@@ -323,53 +283,41 @@ const StudentDashboard = () => {
                   </h3>
                 </div>
                 <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {results
-                    .filter(result =>
-                      !["r.a.", "result awaited", "ab", "absent", "e.r.", "essential repeat", "ra", "a.b.", "r.a", "a.b", "e.r", "er", "failed"]
-                        .includes(result.resultRemarkEnglish?.toLowerCase().trim())
-                    )
-                    .map((result) => {
-                      const isExpired = result.issuedAt && (new Date() - new Date(result.issuedAt)) / (1000 * 60 * 60 * 24) > 180;
-
-                      return (
-                        <div key={result._id} className="border border-gray-100 rounded-lg p-4 bg-gray-50 flex flex-col justify-between hover:border-green-300 transition-colors">
-                          <div>
-                            <div className="flex justify-between items-start mb-1">
-                              <h4 className="font-bold text-gray-800">{result.subject}</h4>
-                              {result.certificateNo && (
-                                <span className="text-[10px] bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded font-mono">
-                                  {result.certificateNo}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs text-gray-500 mb-3">
-                              {result.issuedAt ? `Issued: ${new Date(result.issuedAt).toLocaleDateString()}` : `Result Date: ${result.dateOfResultEnglish}`}
-                            </p>
+                  {results.filter(r => !failedStatuses.includes(r.resultRemarkEnglish?.toLowerCase().trim())).map((result) => {
+                    const isExpired = result.issuedAt && (new Date() - new Date(result.issuedAt)) / (1000 * 60 * 60 * 24) > 180;
+                    return (
+                      <div key={result._id} className="border border-gray-100 rounded-lg p-4 bg-gray-50 flex flex-col justify-between hover:border-green-300 transition-colors">
+                        <div>
+                          <div className="flex justify-between items-start mb-1">
+                            <h4 className="font-bold text-gray-800">{result.subject}</h4>
+                            {result.certificateNo && (
+                              <span className="text-[10px] bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded font-mono">{result.certificateNo}</span>
+                            )}
                           </div>
-
-                          {isExpired ? (
-                            <div className="text-center p-2 bg-amber-50 border border-amber-100 rounded-md text-amber-700 text-[11px] font-medium">
-                              Download period expired (180 days limit)
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => handleDownloadCertificate(result._id)}
-                              className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 flex items-center justify-center gap-2 text-sm transition-colors shadow-sm"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                              </svg>
-                              Download Certificate
-                            </button>
-                          )}
+                          <p className="text-xs text-gray-500 mb-3">
+                            {result.issuedAt ? `Issued: ${new Date(result.issuedAt).toLocaleDateString()}` : `Result Date: ${result.dateOfResultEnglish}`}
+                          </p>
                         </div>
-                      );
-                    })}
+                        {isExpired ? (
+                          <div className="text-center p-2 bg-amber-50 border border-amber-100 rounded-md text-amber-700 text-[11px] font-medium">
+                            Download period expired (180 days limit)
+                          </div>
+                        ) : (
+                          <button onClick={() => handleDownloadCertificate(result._id)}
+                            className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 flex items-center justify-center gap-2 text-sm transition-colors shadow-sm">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                            Download Certificate
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
 
-            {/* Instructions */}
             <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
               <h3 className="text-lg font-bold text-gray-800 mb-4">Important Instructions</h3>
               <ul className="space-y-2 text-sm text-gray-600 list-disc pl-5">
@@ -383,39 +331,34 @@ const StudentDashboard = () => {
         )}
       </main>
 
-      {/* Certificate Modal */}
       {selectedResult && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
-          <div className="bg-white rounded-xl w-full max-h-[95vh] overflow-y-auto mx-auto shadow-2xl"
-               style={{ maxWidth: 'min(95vw, 1000px)' }}>
+          <div className="bg-white rounded-xl w-full max-h-[95vh] overflow-y-auto mx-auto shadow-2xl" style={{ maxWidth: 'min(95vw, 1000px)' }}>
             <div className="sticky top-0 bg-white border-b border-gray-100 p-4 sm:p-5 z-50 flex flex-col sm:flex-row justify-between items-center gap-4">
               <h3 className="text-lg font-bold text-gray-800">Certificate Preview</h3>
               <div className="flex gap-3">
-                <button
-                  onClick={handlePrintCertificate}
-                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2 shadow-sm transition-colors text-sm"
-                >
+                <button onClick={handlePrintCertificate}
+                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2 shadow-sm transition-colors text-sm">
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                   </svg>
                   Download PDF
                 </button>
-                <button
-                  onClick={() => setSelectedResult(null)}
-                  className="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors text-sm"
-                >
+                <button onClick={() => setSelectedResult(null)}
+                  className="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors text-sm">
                   Close
                 </button>
               </div>
             </div>
-            <div className="flex justify-center bg-gray-50 overflow-hidden" id="printableContent">
-              <CertificateTemplate certificateData={selectedResult} />
+            <div className="flex justify-center bg-gray-50 overflow-hidden">
+              <div id="printableContent">
+                <CertificateTemplate certificateData={selectedResult} />
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Footer Info */}
       <footer className="bg-white border-t border-gray-100 py-6 mt-12">
         <div className="max-w-7xl mx-auto px-4 text-center">
           <p className="text-sm text-gray-500">
