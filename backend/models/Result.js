@@ -49,8 +49,8 @@ const resultSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'approved', 'rejected', 'disapproved'],
-    default: 'pending'
+    enum: ['draft', 'pending', 'approved', 'disapproved'],
+    default: 'draft'
   },
   batchId: {
     type: String,
@@ -94,7 +94,7 @@ const resultSchema = new mongoose.Schema({
   },
   dateOfBirth: {
     type: String,
-    required: true
+    default: ''
   },
   courseNameHindi: {
     type: String,
