@@ -3,11 +3,44 @@ const xlsx = require('xlsx');
 
 const tryParseDate = (dateVal) => {
   if (!dateVal) return '';
-  if (dateVal instanceof Date) return dateVal.toISOString().split('T')[0];
+  
+  // Handle Excel Serial Dates (numbers)
+  if (typeof dateVal === 'number') {
+    // Excel date epoch is 1899-12-30
+    const date = new Date(Math.round((dateVal - 25569) * 864e5));
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  if (dateVal instanceof Date) {
+    // Use local components to avoid timezone shift from toISOString()
+    const year = dateVal.getFullYear();
+    const month = String(dateVal.getMonth() + 1).padStart(2, '0');
+    const day = String(dateVal.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
   const dateStr = dateVal.toString().trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+
+  // Try to handle DD-MM-YYYY or DD/MM/YYYY
+  const dmYMatch = dateStr.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (dmYMatch) {
+    const [_, d, m, y] = dmYMatch;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+
   const d = new Date(dateStr);
-  return isNaN(d.getTime()) ? dateStr : d.toISOString().split('T')[0];
+  if (!isNaN(d.getTime())) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  return dateStr;
 };
 
 const isHeaderRow = (row) => {
@@ -41,7 +74,7 @@ const processCSV = (buffer) => {
 };
 
 const processExcel = (buffer) => {
-  const workbook = xlsx.read(buffer);
+  const workbook = xlsx.read(buffer, { cellDates: true });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const data = xlsx.utils.sheet_to_json(sheet, { header: 1 });
 
