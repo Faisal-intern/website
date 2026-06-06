@@ -1,141 +1,140 @@
 const User = require('../models/User');
 const Result = require('../models/Result');
 const FileUpload = require('../models/FileUpload');
-const bcrypt = require('bcryptjs');
+const { processCSV, processExcel } = require('../utils/fileParser');
 const mongoose = require('mongoose');
-const mailSender = require('../utils/mailSender'); 
 
-
-
-const resetPassword = async (req, res) => {
+// Admin uploads student data -> Creates "draft" results
+const uploadStudents = async (req, res) => {
   try {
-    const { token, newPassword } = req.body;
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    const { subject } = req.body;
+    if (!subject) return res.status(400).json({ message: 'Subject is required' });
 
-    if (!token || !newPassword) {
-      return res.status(400).json({ message: 'Token and new password are required' });
+    console.log(`Starting upload for subject: ${subject}, file: ${req.file.originalname}`);
+
+    const batchId = `BATCH-${Date.now()}`;
+    const batchName = `${subject} - ${new Date().toISOString().split('T')[0]}`;
+
+    let parsedResults = [];
+    try {
+      if (req.file.mimetype === 'text/csv' || req.file.originalname.toLowerCase().endsWith('.csv')) {
+        parsedResults = await processCSV(req.file.buffer);
+      } else {
+        parsedResults = await processExcel(req.file.buffer);
+      }
+    } catch (parseErr) {
+      console.error('Parsing Error:', parseErr);
+      return res.status(400).json({ message: 'Error parsing file. Ensure it is a valid CSV or Excel file.', error: parseErr.message });
     }
 
-    // Find admin with valid token
-    const user = await User.findOne({
-      resetPasswordToken: token,
-      resetPasswordExpires: { $gt: Date.now() }, // Ensure token is valid
+    if (!parsedResults.length) {
+      return res.status(400).json({ message: 'No valid student data found. Please check your file format.' });
+    }
+
+    // Store raw file
+    await FileUpload.create({
+      batchId,
+      fileName: req.file.originalname,
+      fileContent: req.file.buffer,
+      fileType: req.file.mimetype,
+      uploadedBy: req.user._id
     });
 
-    if (!user) {
-      return res.status(400).json({ message: 'Invalid or expired token' });
+    const resultsToInsert = [];
+    
+    // Process students sequentially to avoid duplicate email race conditions
+    for (const data of parsedResults) {
+      let student = await User.findOne({ email: data.email, role: 'student' });
+      
+      if (!student) {
+        const password = data.dateOfBirth ? data.dateOfBirth.replace(/-/g, '') : 'student123';
+        try {
+          student = await User.create({
+            name: data.candidateNameEnglish || data.email.split('@')[0],
+            email: data.email,
+            password,
+            role: 'student',
+            dateOfBirth: data.dateOfBirth
+          });
+        } catch (createErr) {
+          if (createErr.code === 11000) {
+            student = await User.findOne({ email: data.email, role: 'student' });
+          } else {
+            throw createErr;
+          }
+        }
+      }
+
+      resultsToInsert.push({
+        ...data,
+        student: student._id,
+        subject,
+        batchId,
+        batchName,
+        uploadedBy: req.user._id,
+        status: 'draft'
+      });
     }
 
-  
+    const savedResults = await Result.insertMany(resultsToInsert);
 
-    // Update password and clear reset token
-    user.password = newPassword;
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpires = undefined;
-
-    await user.save();
-
-    res.status(200).json({ message: 'Password reset successfully' });
-
-  } catch (error) {
-    res.status(500).json({ message: 'Internal server error', error: error.message });
-  }
-};
-
-
-
-
-
-const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
-
-const sendResetPasswordLink = async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
-
-    // Find the admin user
-    const user = await User.findOne({ email, role: "admin" });
-    if (!user) {
-      return res.status(404).json({ message: "Admin not found" });
-    }
-
-    // Generate a 6-digit OTP
-    const otp = generateOTP();
-
-    // Store OTP with expiry (valid for 10 minutes)
-    user.resetPasswordToken = otp;
-    user.resetPasswordExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-
-    await user.save();
-
-    // Email content
-    const emailTitle = "Reset Your Password - OTP Verification";
-    const emailBody = `
-      <p>Hello ${user.name},</p>
-      <p>You requested a password reset. Use the OTP below to reset your password:</p>
-      <h2 style="color: #4CAF50;">${otp}</h2>
-      <p>This OTP is valid for <strong>10 minutes</strong>.</p>
-      <p>If you did not request this, please ignore this email.</p>
-    `;
-
-    // Send email using mailSender
-    await mailSender(user.email, emailTitle, emailBody);
-
-    res.status(200).json({ message: "OTP sent to email for password reset" });
-
-  } catch (error) {
-    res.status(500).json({ message: "Internal server error", error: error.message });
-  }
-};
-
-
-
-
-// Add a new teacher
-const addTeacher = async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-
-    const teacherExists = await User.findOne({ email });
-    if (teacherExists) {
-      return res.status(400).json({ message: 'Teacher already exists' });
-    }
-
-    const teacher = await User.create({
-      name,
-      email,
-      password,
-      role: 'teacher',
-    });
-
-    res.status(201).json({
-      _id: teacher._id,
-      name: teacher.name,
-      email: teacher.email,
-      role: teacher.role,
+    res.status(201).json({ 
+      batchId, 
+      batchName, 
+      count: savedResults.length,
+      message: `Successfully uploaded ${savedResults.length} students and created draft batch.`
     });
   } catch (error) {
-    res.status(500).json({ message: 'Error adding teacher', error: error.message });
+    console.error('Upload Error:', error);
+    res.status(500).json({ message: 'Error uploading students', error: error.message });
   }
 };
 
-// Get all teachers
-const getTeachers = async (req, res) => {
+const assignBatch = async (req, res) => {
   try {
-    const teachers = await User.find({ role: 'teacher' }).select('-password');
-    res.json(teachers);
+    const { batchId, teacherId } = req.body;
+    await Result.updateMany({ batchId }, { uploadedBy: teacherId });
+    res.json({ message: 'Batch assigned to teacher successfully' });
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching teachers', error: error.message });
+    res.status(500).json({ message: 'Error assigning batch', error: error.message });
   }
 };
 
-// Get pending results
+const getDraftBatches = async (req, res) => {
+  try {
+    const batches = await Result.aggregate([
+      { $match: { status: 'draft' } },
+      {
+        $group: {
+          _id: '$batchId',
+          batchName: { $first: '$batchName' },
+          subject: { $first: '$subject' },
+          uploadedBy: { $first: '$uploadedBy' },
+          createdAt: { $first: '$createdAt' },
+          studentCount: { $sum: 1 }
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'uploadedBy',
+          foreignField: '_id',
+          as: 'uploader'
+        }
+      },
+      { $unwind: '$uploader' },
+      { $sort: { createdAt: -1 } }
+    ]);
+    res.json(batches);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching draft batches', error: error.message });
+  }
+};
+
 const getPendingResults = async (req, res) => {
   try {
-    // Group pending results by batch
-    const results = await Result.aggregate([
+    const batches = await Result.aggregate([
       { $match: { status: 'pending' } },
       {
         $group: {
@@ -144,7 +143,7 @@ const getPendingResults = async (req, res) => {
           subject: { $first: '$subject' },
           uploadedBy: { $first: '$uploadedBy' },
           createdAt: { $first: '$createdAt' },
-          studentsCount: { $sum: 1 }
+          studentCount: { $sum: 1 }
         }
       },
       {
@@ -158,322 +157,155 @@ const getPendingResults = async (req, res) => {
       { $unwind: '$teacher' },
       { $sort: { createdAt: -1 } }
     ]);
-
-    res.json(results);
+    res.json(batches);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching pending results', error: error.message });
   }
 };
 
-// Approve result
-const approveResult = async (req, res) => {
+const approveBatch = async (req, res) => {
   try {
     const { batchId } = req.params;
-    
-    // Update all results in the batch
-    const result = await Result.updateMany(
-      { batchId },
-      { 
-        $set: { 
-          status: 'approved',
-          updatedAt: new Date() // Explicitly update the timestamp
-        } 
-      }
-    );
-
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({ message: 'Batch not found' });
-    }
-
-    // Log the update result for debugging
-    console.log('Batch approval result:', result);
-
-    res.json({ 
-      message: 'Batch approved successfully',
-      modifiedCount: result.modifiedCount 
-    });
+    await Result.updateMany({ batchId }, { status: 'approved' });
+    res.json({ message: 'Batch approved successfully' });
   } catch (error) {
-    console.error('Error in approveResult:', error);
     res.status(500).json({ message: 'Error approving batch', error: error.message });
   }
 };
 
-// Disapprove result
-const disapproveResult = async (req, res) => {
+const disapproveBatch = async (req, res) => {
   try {
     const { batchId } = req.params;
-    
-    // Update all results in the batch
-    const result = await Result.updateMany(
-      { batchId },
-      { 
-        $set: { 
-          status: 'disapproved',
-          updatedAt: new Date() // Explicitly update the timestamp
-        } 
-      }
-    );
-
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({ message: 'Batch not found or no results to disapprove' });
-    }
-
-    // Log the update result for debugging
-    console.log('Batch disapproval result:', result);
-
-    res.json({ 
-      message: 'Batch disapproved successfully',
-      modifiedCount: result.modifiedCount 
-    });
+    await Result.updateMany({ batchId }, { status: 'disapproved' });
+    res.json({ message: 'Batch disapproved successfully' });
   } catch (error) {
-    console.error('Error in disapproveResult:', error);
     res.status(500).json({ message: 'Error disapproving batch', error: error.message });
   }
 };
 
-// Get pending batch preview
+const getTeachers = async (req, res) => {
+  try {
+    const teachers = await User.find({ role: 'teacher' }).select('-password');
+    res.json(teachers);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching teachers', error: error.message });
+  }
+};
+
 const getPendingBatchPreview = async (req, res) => {
   try {
     const { batchId } = req.params;
-    
-    const results = await Result.find({ batchId })
-      .select(`
-        rollNo enrolmentNo
-        candidateNameEnglish candidateNameHindi
-        fatherNameEnglish fatherNameHindi
-        courseNameEnglish courseNameHindi
-        courseYearEnglish courseYearHindi
-        subject
-        iaSubCode meSubCode
-        iaMarks meMarks marksTotal
-        maxMarks iaMaxMarks meMaxMarks
-        modeEnglish modeHindi
-        resultRemarkEnglish resultRemarkHindi
-        dateOfResultEnglish dateOfResultHindi
-        dateOfBirth
-        durationEnglish durationHindi
-      `)
-      .sort('rollNo');
-
-    if (!results.length) {
-      return res.status(404).json({ message: 'No results found for this batch' });
-    }
-
+    const results = await Result.find({ batchId }).populate('student', 'name email');
     res.json({ results });
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching batch preview', error: error.message });
+    res.status(500).json({ message: 'Error fetching preview', error: error.message });
   }
 };
 
-// Get result file
-const getResultFile = async (req, res) => {
+// Restore teacher management functions
+const addTeacher = async (req, res) => {
   try {
-    const { batchId } = req.params;
-    const fileUpload = await FileUpload.findOne({ batchId });
-    
-    if (!fileUpload) {
-      return res.status(404).json({ message: 'File not found' });
-    }
+    const { name, email, password } = req.body;
+    const teacherExists = await User.findOne({ email });
+    if (teacherExists) return res.status(400).json({ message: 'Teacher already exists' });
 
-    res.set({
-      'Content-Type': fileUpload.fileType,
-      'Content-Disposition': `attachment; filename="${fileUpload.fileName}"`,
-    });
-
-    res.send(fileUpload.fileContent);
+    const teacher = await User.create({ name, email, password, role: 'teacher' });
+    res.status(201).json({ _id: teacher._id, name: teacher.name, email: teacher.email, role: teacher.role });
   } catch (error) {
-    res.status(500).json({ message: 'Error downloading file', error: error.message });
+    res.status(500).json({ message: 'Error adding teacher', error: error.message });
   }
 };
-
-// Update result file status to 'pending'
-const removeResultFile = async (req, res) => {
-  try {
-    const { batchId } = req.params;
-
-    // Check if the file exists in the FileUpload collection
-    const fileUpload = await FileUpload.findOne({ batchId });
-    if (!fileUpload) {
-      return res.status(404).json({ message: 'File not found in FileUpload' });
-    }
-
-    // Update the `Result` schema to reflect the file status change
-    const resultUpdate = await Result.updateMany(
-      { batchId },
-      {
-        $set: { status: 'pending', teacherArchived: true }, // Update status and other relevant fields
-        $currentDate: { updatedAt: true }, // Update the `updatedAt` field
-      }
-    );
-
-    if (resultUpdate.matchedCount === 0) {
-      return res.status(404).json({ message: 'No matching results found for batchId' });
-    }
-
-    res.json({
-      message: 'File status updated to "pending" successfully in Result schema',
-      resultsUpdated: resultUpdate.modifiedCount,
-    });
-  } catch (error) {
-    console.error('Error updating file status:', error);
-    res.status(500).json({ message: 'Error updating file status', error: error.message });
-  }
-};
-
-
-
-
-// Add this function to get published results
-const getPublishedResults = async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-
-    const results = await Result.aggregate([
-      { $match: { status: 'approved', archived: { $ne: true } } }, // Exclude archived results
-      {
-        $group: {
-          _id: '$batchId',
-          batchId: { $first: '$batchId' },
-          batchName: { $first: '$batchName' },
-          subject: { $first: '$subject' },
-          uploadedBy: { $first: '$uploadedBy' },
-          createdAt: { $first: '$createdAt' },
-          updatedAt: { $first: '$updatedAt' },
-          studentsCount: { $sum: 1 }
-        }
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'uploadedBy',
-          foreignField: '_id',
-          as: 'teacher'
-        }
-      },
-      { $unwind: { path: '$teacher', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          _id: 1,
-          batchId: 1,
-          batchName: { $ifNull: ['$batchName', 'Unknown Batch'] },
-          subject: 1,
-          'teacher.name': { $ifNull: ['$teacher.name', 'Unknown Teacher'] },
-          studentsCount: 1,
-          createdAt: 1,
-          updatedAt: 1
-        }
-      },
-      { $sort: { updatedAt: -1 } },
-      { $skip: skip },
-      { $limit: limit }
-    ]);
-
-    console.log('Published results:', results);
-    res.json(results);
-  } catch (error) {
-    console.error('Error in getPublishedResults:', {
-      error: error.message,
-      stack: error.stack
-    });
-    res.status(500).json({ message: 'Error fetching published results', error: error.message });
-  }
-};
-
-
-// Remove a teacher
 
 const removeTeacher = async (req, res) => {
   try {
     const teacherId = req.params.teacherId;
+    if (!mongoose.Types.ObjectId.isValid(teacherId)) return res.status(400).json({ message: 'Invalid teacher ID' });
 
-    // Validate teacherId
-    if (!mongoose.Types.ObjectId.isValid(teacherId)) {
-      return res.status(400).json({ message: 'Invalid teacher ID' });
-    }
+    const pendingResults = await Result.findOne({ uploadedBy: teacherId, status: 'pending' });
+    if (pendingResults) return res.status(400).json({ message: 'Cannot remove teacher with pending results.' });
 
-    // Check if teacher has any pending results
-    const pendingResults = await Result.findOne({ 
-      uploadedBy: teacherId, 
-      status: 'pending' 
-    });
-
-    if (pendingResults) {
-      return res.status(400).json({ 
-        message: 'Cannot remove teacher with pending results. Please process all pending results first.' 
-      });
-    }
-
-    
-
-    // Remove the teacher
     const removedTeacher = await User.findByIdAndDelete(teacherId);
-    if (!removedTeacher) {
-      return res.status(404).json({ message: 'Teacher not found' });
-    }
+    if (!removedTeacher) return res.status(404).json({ message: 'Teacher not found' });
 
-    res.json({ message: 'Teacher  removed successfully' });
+    res.json({ message: 'Teacher removed successfully' });
   } catch (error) {
-    console.error('Error removing teacher:', error);
-    res.status(500).json({ 
-      message: 'Error removing teacher', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Error removing teacher', error: error.message });
   }
 };
 
-
-
-// Change teacher password
 const changeTeacherPassword = async (req, res) => {
   try {
     const teacherId = req.params.teacherId;
     const { newPassword } = req.body;
+    if (!newPassword) return res.status(400).json({ message: 'Password is required' });
 
-    if (!newPassword) {
-      return res.status(400).json({ 
-        message: 'Password is required' 
-      });
-    }
+    const user = await User.findById(teacherId);
+    if (!user) return res.status(404).json({ message: 'Teacher not found' });
 
-    // Hash the new password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-
-    // Update the teacher's password
-    const teacher = await User.findByIdAndUpdate(
-      teacherId,
-      { password: hashedPassword },
-      { new: true }
-    );
-
-    if (!teacher) {
-      return res.status(404).json({ message: 'Teacher not found' });
-    }
+    user.password = newPassword; // Hashing handled by pre-save hook
+    await user.save();
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
-    console.error('Error changing password:', error);
-    res.status(500).json({ 
-      message: 'Error changing password', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Error changing password', error: error.message });
+  }
+};
+
+const deleteDraftBatch = async (req, res) => {
+  try {
+    const { batchId } = req.params;
+    
+    // Ensure the batch is actually a draft before deleting
+    const draftResults = await Result.find({ batchId, status: 'draft' });
+    if (draftResults.length === 0) {
+      return res.status(404).json({ message: 'Draft batch not found or already processed' });
+    }
+
+    // Delete all results in this batch
+    await Result.deleteMany({ batchId, status: 'draft' });
+    
+    // Delete the associated file upload
+    await FileUpload.deleteOne({ batchId });
+
+    res.json({ message: 'Draft batch deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting draft batch', error: error.message });
+  }
+};
+
+const updateBatchResults = async (req, res) => {
+  try {
+    const { results } = req.body;
+    
+    await Promise.all(results.map(async (item) => {
+      const marksTotal = (parseFloat(item.iaMarks) || 0) + (parseFloat(item.meMarks) || 0);
+      return Result.findByIdAndUpdate(item.resultId, {
+        iaMarks: item.iaMarks,
+        meMarks: item.meMarks,
+        marksTotal: marksTotal,
+        resultRemarkEnglish: item.resultRemarkEnglish,
+        resultRemarkHindi: item.resultRemarkHindi
+      });
+    }));
+
+    res.json({ message: 'Results updated successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating results', error: error.message });
   }
 };
 
 module.exports = {
-  addTeacher,
-  getTeachers,
+  uploadStudents,
+  assignBatch,
+  getDraftBatches,
   getPendingResults,
-  approveResult,
-  disapproveResult,
+  approveBatch,
+  disapproveBatch,
+  getTeachers,
   getPendingBatchPreview,
-  getResultFile,
-  removeResultFile,
-  getPublishedResults,
+  addTeacher,
   removeTeacher,
   changeTeacherPassword,
-  resetPassword,
-  sendResetPasswordLink
-}; 
+  deleteDraftBatch,
+  updateBatchResults
+};

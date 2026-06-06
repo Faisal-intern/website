@@ -1,58 +1,43 @@
 const express = require('express');
-const { protect, admin } = require('../middleware/authMiddleware');
-const {
-  addTeacher,
-  getTeachers,
-  getPendingResults,
-  approveResult,
-  disapproveResult,
+const router = express.Router();
+const multer = require('multer');
+const { 
+  uploadStudents, 
+  assignBatch, 
+  getDraftBatches, 
+  getTeachers, 
+  getPendingResults, 
+  approveBatch, 
+  disapproveBatch,
   getPendingBatchPreview,
-  getResultFile,
-  removeResultFile,
-  getPublishedResults,
+  addTeacher,
   removeTeacher,
   changeTeacherPassword,
-  sendResetPasswordLink,
-  resetPassword
-
+  deleteDraftBatch,
+  updateBatchResults
 } = require('../controllers/adminController');
+const { protect, admin } = require('../middleware/authMiddleware');
 
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
-
-
-
-
-
-const router = express.Router();
-
-
-router.post("/send-reset-password-link",sendResetPasswordLink);
-router.post('/reset-password', resetPassword);
-
-
-// Apply authentication middleware to all routes
 router.use(protect);
 router.use(admin);
 
-
-
-
-
-
-router.post('/add-teacher', addTeacher);
+router.post('/upload-students', upload.single('file'), uploadStudents);
+router.post('/assign-batch', assignBatch);
+router.get('/draft-batches', getDraftBatches);
+router.delete('/draft-batch/:batchId', deleteDraftBatch);
 router.get('/teachers', getTeachers);
 router.get('/pending-results', getPendingResults);
-router.put('/approve-result/:resultId', approveResult);
-router.put('/approve-batch/:batchId', approveResult);
-router.put('/disapprove-result/:resultId', disapproveResult);
-router.put('/disapprove-batch/:batchId', disapproveResult);
-router.get('/preview-batch/:batchId', getPendingBatchPreview);
-router.get('/result-file/:batchId', getResultFile);
-router.get('/published-results', getPublishedResults);
-router.delete('/remove-teacher/:teacherId', removeTeacher);
-router.put('/change-teacher-password/:teacherId', changeTeacherPassword);
-// Define the route for removing the result file
-router.delete('/remove-file/:batchId', removeResultFile);
+router.get('/batch-preview/:batchId', getPendingBatchPreview);
+router.put('/update-batch-results', updateBatchResults);
+router.post('/approve-batch/:batchId', approveBatch);
+router.post('/disapprove-batch/:batchId', disapproveBatch);
 
+// Teacher management
+router.post('/add-teacher', addTeacher);
+router.delete('/teacher/:teacherId', removeTeacher);
+router.put('/teacher-password/:teacherId', changeTeacherPassword);
 
-module.exports = router; 
+module.exports = router;
