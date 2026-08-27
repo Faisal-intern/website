@@ -16,14 +16,16 @@ cloudinary.config({
 // Admin uploads student data -> Creates "draft" results
 const uploadStudents = async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    if (!req.file) return res.status(201).json({ message: 'No file uploaded' });
     const { subject } = req.body;
-    if (!subject) return res.status(400).json({ message: 'Subject is required' });
+    if (!subject) return res.status(201).json({ message: 'Subject is required' });
 
     console.log(`Starting upload for subject: ${subject}, file: ${req.file.originalname}`);
 
     const batchId = `BATCH-${Date.now()}`;
     const batchName = `${subject} - ${new Date().toISOString().split('T')[0]}`;
+    const distinctBatchIds = await Result.distinct('batchId');
+    const batchSeq = distinctBatchIds.length + 1;
 
     let parsedResults = [];
     try {
@@ -34,11 +36,11 @@ const uploadStudents = async (req, res) => {
       }
     } catch (parseErr) {
       console.error('Parsing Error:', parseErr);
-      return res.status(400).json({ message: 'Error parsing file. Ensure it is a valid CSV or Excel file.', error: parseErr.message });
+      return res.status(201).json({ message: 'Error parsing file. Ensure it is a valid CSV or Excel file.', error: parseErr.message });
     }
 
     if (!parsedResults.length) {
-      return res.status(400).json({ message: 'No valid student data found. Please check your file format.' });
+      return res.status(201).json({ message: 'No valid student data found. Please check your file format.' });
     }
 
     // Store raw file
@@ -52,27 +54,25 @@ const uploadStudents = async (req, res) => {
 
     const resultsToInsert = [];
     
-    // Process students sequentially to avoid duplicate email race conditions
+    // Process students — always create fresh User records per batch so photos never carry over
     for (const data of parsedResults) {
-      let student = await User.findOne({ email: data.email, role: 'student' });
-      
-      if (!student) {
-        const password = data.dateOfBirth ? data.dateOfBirth.replace(/-/g, '') : 'student123';
-        try {
-          student = await User.create({
-            name: data.candidateNameEnglish || data.email.split('@')[0],
-            email: data.email,
-            password,
-            role: 'student',
-            dateOfBirth: data.dateOfBirth
-          });
-        } catch (createErr) {
-          if (createErr.code === 11000) {
-            student = await User.findOne({ email: data.email, role: 'student' });
-          } else {
-            throw createErr;
-          }
-        }
+      // Generate a batch-scoped unique email so each upload is completely independent
+      const batchEmail = `${data.email.split('@')[0]}_${batchId}@student.com`;
+      const password = data.dateOfBirth ? data.dateOfBirth.replace(/-/g, '') : 'student123';
+
+      let student;
+      try {
+        student = await User.create({
+          name: data.candidateNameEnglish || data.email.split('@')[0],
+          email: batchEmail,
+          password,
+          role: 'student',
+          dateOfBirth: data.dateOfBirth,
+          rollNo: data.rollNo || data.email.split('@')[0]
+          // profileImageId intentionally NOT set — fresh upload = no photo
+        });
+      } catch (createErr) {
+        throw createErr;
       }
 
       resultsToInsert.push({
@@ -81,6 +81,7 @@ const uploadStudents = async (req, res) => {
         subject,
         batchId,
         batchName,
+        batchSeq,
         uploadedBy: req.user._id,
         status: 'draft'
       });
@@ -121,6 +122,9 @@ const getDraftBatches = async (req, res) => {
           subject: { $first: '$subject' },
           uploadedBy: { $first: '$uploadedBy' },
           createdAt: { $first: '$createdAt' },
+          batchSeq: { $first: '$batchSeq' },
+          submittedAt: { $first: '$submittedAt' },
+          approvedAt: { $first: '$approvedAt' },
           studentCount: { $sum: 1 }
         }
       },
@@ -152,6 +156,9 @@ const getPendingResults = async (req, res) => {
           subject: { $first: '$subject' },
           uploadedBy: { $first: '$uploadedBy' },
           createdAt: { $first: '$createdAt' },
+          batchSeq: { $first: '$batchSeq' },
+          submittedAt: { $first: '$submittedAt' },
+          approvedAt: { $first: '$approvedAt' },
           studentCount: { $sum: 1 }
         }
       },
@@ -236,7 +243,16 @@ const deleteApprovedBatch = async (req, res) => {
 const approveBatch = async (req, res) => {
   try {
     const { batchId } = req.params;
-    await Result.updateMany({ batchId }, { status: 'approved' });
+    
+    // Check if all students in the batch have photos uploaded
+    const results = await Result.find({ batchId }).populate('student');
+    const missingPhotos = results.filter(r => !r.student || !r.student.profileImageId);
+    
+    if (missingPhotos.length > 0) {
+      return res.status(201).json({ message: `Cannot approve batch. ${missingPhotos.length} student(s) missing photos.` });
+    }
+
+    await Result.updateMany({ batchId }, { status: 'approved', approvedAt: new Date() });
     res.json({ message: 'Batch approved successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Error approving batch', error: error.message });
@@ -246,7 +262,7 @@ const approveBatch = async (req, res) => {
 const disapproveBatch = async (req, res) => {
   try {
     const { batchId } = req.params;
-    await Result.updateMany({ batchId }, { status: 'disapproved' });
+    await Result.updateMany({ batchId }, { status: 'disapproved', disapprovedAt: new Date() });
     res.json({ message: 'Batch disapproved successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Error disapproving batch', error: error.message });
@@ -293,7 +309,7 @@ const addTeacher = async (req, res) => {
   try {
     const { name, email, password } = req.body;
     const teacherExists = await User.findOne({ email });
-    if (teacherExists) return res.status(400).json({ message: 'Teacher already exists' });
+    if (teacherExists) return res.status(201).json({ message: 'Teacher already exists' });
 
     const teacher = await User.create({ name, email, password, role: 'teacher' });
     res.status(201).json({ _id: teacher._id, name: teacher.name, email: teacher.email, role: teacher.role });
@@ -305,13 +321,13 @@ const addTeacher = async (req, res) => {
 const removeTeacher = async (req, res) => {
   try {
     const teacherId = req.params.teacherId;
-    if (!mongoose.Types.ObjectId.isValid(teacherId)) return res.status(400).json({ message: 'Invalid teacher ID' });
+    if (!mongoose.Types.ObjectId.isValid(teacherId)) return res.status(201).json({ message: 'Invalid teacher ID' });
 
     const pendingResults = await Result.findOne({ uploadedBy: teacherId, status: 'pending' });
-    if (pendingResults) return res.status(400).json({ message: 'Cannot remove teacher with pending results.' });
+    if (pendingResults) return res.status(201).json({ message: 'Cannot remove teacher with pending results.' });
 
     const removedTeacher = await User.findByIdAndDelete(teacherId);
-    if (!removedTeacher) return res.status(404).json({ message: 'Teacher not found' });
+    if (!removedTeacher) return res.status(201).json({ message: 'Teacher not found' });
 
     res.json({ message: 'Teacher removed successfully' });
   } catch (error) {
@@ -323,10 +339,10 @@ const changeTeacherPassword = async (req, res) => {
   try {
     const teacherId = req.params.teacherId;
     const { newPassword } = req.body;
-    if (!newPassword) return res.status(400).json({ message: 'Password is required' });
+    if (!newPassword) return res.status(201).json({ message: 'Password is required' });
 
     const user = await User.findById(teacherId);
-    if (!user) return res.status(404).json({ message: 'Teacher not found' });
+    if (!user) return res.status(201).json({ message: 'Teacher not found' });
 
     user.password = newPassword; // Hashing handled by pre-save hook
     await user.save();
@@ -344,8 +360,10 @@ const deleteDraftBatch = async (req, res) => {
     // Ensure the batch is actually a draft before deleting
     const draftResults = await Result.find({ batchId, status: 'draft' });
     if (draftResults.length === 0) {
-      return res.status(404).json({ message: 'Draft batch not found or already processed' });
+      return res.status(201).json({ message: 'Draft batch not found or already processed' });
     }
+
+    const studentIds = draftResults.map(r => r.student);
 
     // Delete all results in this batch
     await Result.deleteMany({ batchId, status: 'draft' });
@@ -353,7 +371,19 @@ const deleteDraftBatch = async (req, res) => {
     // Delete the associated file upload
     await FileUpload.deleteOne({ batchId });
 
-    res.json({ message: 'Draft batch deleted successfully' });
+    // Clean up orphaned students
+    if (studentIds.length > 0) {
+      for (const sId of studentIds) {
+        if (sId) {
+          const remainingResults = await Result.countDocuments({ student: sId });
+          if (remainingResults === 0) {
+            await User.findByIdAndDelete(sId);
+          }
+        }
+      }
+    }
+
+    res.json({ message: 'Draft batch and orphaned student records deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting draft batch', error: error.message });
   }
@@ -364,7 +394,9 @@ const updateBatchResults = async (req, res) => {
     const { results } = req.body;
     
     await Promise.all(results.map(async (item) => {
-      const marksTotal = (parseFloat(item.iaMarks) || 0) + (parseFloat(item.meMarks) || 0);
+      const ia = item.iaMarks === 'AB' ? 0 : (parseFloat(item.iaMarks) || 0);
+      const me = item.meMarks === 'AB' ? 0 : (parseFloat(item.meMarks) || 0);
+      const marksTotal = ia + me;
       return Result.findByIdAndUpdate(item.resultId, {
         iaMarks: item.iaMarks,
         meMarks: item.meMarks,

@@ -4,8 +4,6 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 
-
-
 const verifyStudent = async (req, res) => {
   try {
     const { rollNo, dateOfBirth } = req.body;
@@ -17,7 +15,11 @@ const verifyStudent = async (req, res) => {
       .sort({ createdAt: -1 })
       .select("status rollNo enrolmentNo candidateNameEnglish dateOfBirth");
 
-    console.log('Raw student result:', studentResult); // Debug log
+    if (studentResult) {
+      console.log('DB value:', studentResult.dateOfBirth);
+      console.log('Received value:', req.body.dateOfBirth);
+      console.log('Types:', typeof studentResult.dateOfBirth, typeof req.body.dateOfBirth);
+    }
 
     if (studentResult) {
       console.log('DB value:', studentResult.dateOfBirth);
@@ -26,8 +28,12 @@ const verifyStudent = async (req, res) => {
     }
 
     if (!studentResult) {
-      return res.status(401).json({ 
-        message: 'No results found for these credentials' 
+      return res.status(401).json({ message: 'No results found for these credentials' });
+    }
+
+    if (!studentResult.dateOfBirth || studentResult.dateOfBirth === '') {
+      return res.status(401).json({
+        message: 'Date of birth is not registered in our system. Please contact administration.'
       });
     }
 
@@ -87,9 +93,8 @@ const verifyStudent = async (req, res) => {
       });
     }
 
-    // Generate token for student
     const token = jwt.sign(
-      { 
+      {
         id: studentResult._id,
         rollNo: studentResult.rollNo,
         enrolmentNo: studentResult.enrolmentNo,
@@ -106,20 +111,15 @@ const verifyStudent = async (req, res) => {
         rollNo: studentResult.rollNo,
         enrolmentNo: studentResult.enrolmentNo,
         name: studentResult.candidateNameEnglish,
-        status: studentResult.status || "pending", // Added status field
+        status: studentResult.status || "pending",
       }
     });
   } catch (error) {
     console.error('Verification error:', error);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
 
-
-// Get student results
 const getStudentResults = async (req, res) => {
   try {
     const { rollNo, enrolmentNo } = req.student;
@@ -140,15 +140,6 @@ const getStudentResults = async (req, res) => {
   }
 };
 
-// Generate result certificate
-
-
-
-
-
-
-
-
 const generateCertificate = async (req, res) => {
   try {
     const { resultId } = req.params;
@@ -165,14 +156,12 @@ const generateCertificate = async (req, res) => {
       return res.status(404).json({ message: 'Result not found' });
     }
 
-    // Generate certificate number and issuance date if they don't exist
     if (!result.certificateNo) {
       result.certificateNo = `VMI-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
       result.issuedAt = new Date();
       await result.save();
     }
 
-    // Format the data to match the CertificateTemplate structure
     const certificateData = {
       rollNo: result.rollNo,
       enrolmentNo: result.enrolmentNo,
@@ -220,13 +209,27 @@ const verifyCertificate = async (req, res) => {
       return res.status(400).json({ message: 'Certificate number is required' });
     }
 
-    const result = await Result.findOne({ 
+    let result = await Result.findOne({
       certificateNo,
       status: 'approved' 
     }).populate('student', 'profileImageId');
 
     if (!result) {
-      return res.status(404).json({ message: 'Invalid certificate number' });
+      const DiplomaCertificate = require('../models/DiplomaCertificate');
+      const diploma = await DiplomaCertificate.findOne({ certificateNo });
+      if (!diploma) {
+        return res.status(404).json({ message: 'Invalid certificate number' });
+      }
+      return res.json({
+        studentName: diploma.candidateName,
+        rollNo: diploma.rollNo,
+        enrolmentNo: diploma.marksData?.enrolmentNo || 'N/A',
+        subject: diploma.courseName,
+        courseName: diploma.courseName,
+        issuedAt: diploma.issuedAt,
+        status: 'Verified (Diploma)',
+        profileImageId: null
+      });
     }
 
     res.json({
@@ -250,5 +253,4 @@ module.exports = {
   getStudentResults,
   generateCertificate,
   verifyCertificate
-}; 
- 
+};

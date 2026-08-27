@@ -1,13 +1,13 @@
 const Result = require('../models/Result');
+const { computeRemark } = require('../utils/remarkCalculator');
 
-// Get batches assigned to teacher with status "draft" or "disapproved"
+// Get all batches assigned to teacher
 const getAssignedBatches = async (req, res) => {
   try {
     const batches = await Result.aggregate([
       { 
         $match: { 
-          uploadedBy: req.user._id, 
-          status: { $in: ['draft', 'disapproved'] } 
+          uploadedBy: req.user._id 
         } 
       },
       {
@@ -42,19 +42,35 @@ const getBatchResults = async (req, res) => {
   }
 };
 
-// Save progress (marks and remarks)
+// Save progress — teacher can only submit marks; remarks are auto-computed here.
 const saveProgress = async (req, res) => {
   try {
-    const { results } = req.body; // Array of { resultId, iaMarks, meMarks, ... }
-    
+    const { results } = req.body; // Array of { resultId, iaMarks, meMarks }
+
     await Promise.all(results.map(async (item) => {
-      const marksTotal = (item.iaMarks || 0) + (item.meMarks || 0);
+      const existing = await Result.findById(item.resultId);
+      if (!existing) return;
+      
+      // Ensure only the assigned teacher can save progress
+      if (existing.uploadedBy.toString() !== req.user._id.toString()) {
+        throw new Error('Not authorized to modify this result');
+      }
+
+      // Treat 'AB' (absent) as 0 for total calculation only
+      const isAB = (v) => v !== null && v !== undefined && v.toString().trim().toUpperCase() === 'AB';
+      const iaNum = isAB(item.iaMarks) ? 0 : (parseFloat(item.iaMarks) || 0);
+      const meNum = isAB(item.meMarks) ? 0 : (parseFloat(item.meMarks) || 0);
+      const marksTotal = iaNum + meNum;
+
+      // Backend always computes the remark — teacher cannot override
+      const remark = computeRemark(item.iaMarks, existing.iaMaxMarks, item.meMarks, existing.meMaxMarks);
+
       return Result.findByIdAndUpdate(item.resultId, {
         iaMarks: item.iaMarks,
         meMarks: item.meMarks,
-        marksTotal: marksTotal,
-        resultRemarkEnglish: item.resultRemarkEnglish,
-        resultRemarkHindi: item.resultRemarkHindi
+        marksTotal,
+        resultRemarkEnglish: remark.english,
+        resultRemarkHindi: remark.hindi
       });
     }));
 
@@ -70,7 +86,7 @@ const submitBatch = async (req, res) => {
     const { batchId } = req.params;
     await Result.updateMany(
       { batchId, uploadedBy: req.user._id },
-      { status: 'pending' }
+      { status: 'pending', submittedAt: new Date() }
     );
     res.json({ message: 'Batch submitted for approval' });
   } catch (error) {

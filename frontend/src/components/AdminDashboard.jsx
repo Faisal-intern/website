@@ -1,14 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import Header from './Header';
+import DiplomaCertificateTemplate from './DiplomaCertificateTemplate';
 import toast from 'react-hot-toast';
+import { useReactToPrint } from 'react-to-print';
 import { 
   UsersIcon, 
   CloudArrowUpIcon, 
   DocumentTextIcon, 
   CheckBadgeIcon,
   ArrowLeftOnRectangleIcon,
-  Bars3Icon,
   XMarkIcon,
   TrashIcon,
   EyeIcon,
@@ -18,19 +19,19 @@ import {
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
-const SidebarItem = ({ icon: Icon, label, active, onClick, count }) => (
+const NavItem = ({ icon: Icon, label, active, onClick, count }) => (
   <button
     onClick={onClick}
-    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
-      active 
-        ? 'bg-blue-600 text-white shadow-md' 
-        : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
+    className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 whitespace-nowrap ${
+      active
+        ? 'bg-blue-600 text-white'
+        : 'text-gray-200 hover:bg-gray-700 hover:text-white'
     }`}
   >
-    <Icon className="w-5 h-5" />
-    <span className="font-medium flex-1 text-left">{label}</span>
+    <Icon className="w-4 h-4" />
+    <span>{label}</span>
     {count > 0 && (
-      <span className={`text-xs px-2 py-0.5 rounded-full ${active ? 'bg-white text-blue-600' : 'bg-blue-100 text-blue-600'}`}>
+      <span className={`text-xs px-1.5 py-0.5 rounded-full ${active ? 'bg-white text-blue-600' : 'bg-blue-500 text-white'}`}>
         {count}
       </span>
     )}
@@ -38,9 +39,8 @@ const SidebarItem = ({ icon: Icon, label, active, onClick, count }) => (
 );
 
 const AdminDashboard = () => {
-  const { user, logout } = useAuth();
+  const { adminUser: user, logoutAdmin: logout } = useAuth();
   const [activeTab, setActiveTab] = useState('upload');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   
   // Existing state
   const [file, setFile] = useState(null);
@@ -50,6 +50,7 @@ const AdminDashboard = () => {
   const [approvedBatches, setApprovedBatches] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [selectedTeacher, setSelectedTeacher] = useState('');
+  const [isRegisterOpen, setIsRegisterOpen] = useState(true);
   const [currentBatch, setCurrentBatch] = useState(null);
   const [previewData, setPreviewData] = useState(null);
   const [newTeacher, setNewTeacher] = useState({ name: '', email: '', password: '' });
@@ -140,8 +141,9 @@ const AdminDashboard = () => {
 
   const fetchDraftBatches = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/draft-batches`, {
-        headers: { Authorization: `Bearer ${user.token}` }
+      const res = await fetch(`${API_URL}/api/admin/draft-batches?t=${Date.now()}`, {
+        headers: { Authorization: `Bearer ${user.token}` },
+        cache: 'no-store'
       });
       const data = await res.json();
       setDraftBatches(data);
@@ -150,8 +152,9 @@ const AdminDashboard = () => {
 
   const fetchPendingBatches = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/pending-results`, {
-        headers: { Authorization: `Bearer ${user.token}` }
+      const res = await fetch(`${API_URL}/api/admin/pending-results?t=${Date.now()}`, {
+        headers: { Authorization: `Bearer ${user.token}` },
+        cache: 'no-store'
       });
       const data = await res.json();
       setPendingBatches(data);
@@ -161,6 +164,7 @@ const AdminDashboard = () => {
   const handleUpload = async (e) => {
     e.preventDefault();
     if (!file || !subject) return toast.error('Please select file and subject');
+    if (!window.confirm(`Are you sure you want to submit this student record batch for "${subject}"? Please verify the file before proceeding.`)) return;
     const formData = new FormData();
     formData.append('file', file);
     formData.append('subject', subject);
@@ -212,6 +216,7 @@ const AdminDashboard = () => {
       if (res.ok) {
         toast.success(data.message || 'Draft batch deleted');
         fetchDraftBatches();
+        fetchStudents();
       } else {
         toast.error(data.message);
       }
@@ -272,8 +277,48 @@ const AdminDashboard = () => {
       ...prev,
       results: prev.results.map(r => {
         if (r._id === id) {
-          const updated = { ...r, [field]: parseFloat(value) || 0 };
-          updated.marksTotal = (updated.iaMarks || 0) + (updated.meMarks || 0);
+          const markValue = value.toString().trim().toUpperCase() === 'AB' ? 'AB' : (parseFloat(value) || 0);
+          const updated = { ...r, [field]: markValue };
+          const ia = updated.iaMarks === 'AB' ? 0 : (parseFloat(updated.iaMarks) || 0);
+          const me = updated.meMarks === 'AB' ? 0 : (parseFloat(updated.meMarks) || 0);
+          updated.marksTotal = ia + me;
+          
+          // Auto-recalculate remarks
+          const iaMax = parseFloat(updated.iaMaxMarks) || 0;
+          const meMax = parseFloat(updated.meMaxMarks) || 0;
+          const FAIL = { english: 'E.R.', hindi: 'अनुत्तीर्ण' };
+          
+          let newRemark = null;
+          const isAB = (v) => v !== null && v !== undefined && v.toString().trim().toUpperCase() === 'AB';
+          const iaIsAB = isAB(updated.iaMarks);
+          const meIsAB = isAB(updated.meMarks);
+
+          if (iaIsAB && meIsAB) newRemark = { english: 'AB', hindi: 'अनुत्तीर्ण' };
+          else if (iaIsAB || meIsAB) newRemark = FAIL;
+          else if (updated.iaMarks === null || updated.iaMarks === undefined || updated.iaMarks === '' ||
+                   updated.meMarks === null || updated.meMarks === undefined || updated.meMarks === '') {
+            newRemark = FAIL;
+          } else {
+            const iaPercent = iaMax > 0 ? (ia / iaMax) * 100 : 0;
+            const mePercent = meMax > 0 ? (me / meMax) * 100 : 0;
+            if (iaPercent < 40 || mePercent < 40) {
+              newRemark = FAIL;
+            } else {
+              const totalMax = iaMax + meMax;
+              const overallPercent = totalMax > 0 ? ((ia + me) / totalMax) * 100 : 0;
+              if (overallPercent >= 75) newRemark = { english: 'Passed, Distinction', hindi: 'उत्तीर्ण, विशिष्टता' };
+              else if (overallPercent >= 60) newRemark = { english: 'Passed, First Division', hindi: 'उत्तीर्ण, प्रथम श्रेणी' };
+              else if (overallPercent >= 55) newRemark = { english: 'Passed, Second Division', hindi: 'उत्तीर्ण, द्वितीय श्रेणी' };
+              else if (overallPercent >= 40) newRemark = { english: 'Passed', hindi: 'उत्तीर्ण' };
+              else newRemark = FAIL;
+            }
+          }
+          
+          if (newRemark) {
+            updated.resultRemarkEnglish = newRemark.english;
+            updated.resultRemarkHindi = newRemark.hindi;
+          }
+
           return updated;
         }
         return r;
@@ -320,21 +365,27 @@ const AdminDashboard = () => {
     if (!previewData || !previewData.results.length) return;
     
     const headers = [
-      'Roll No', 'Enrolment No', 'Candidate Name', 'Father Name', 
-      'IA Marks', 'ME Marks', 'Total Marks', 
-      'Remark English', 'Remark Hindi'
+      'S. No.', 'Date of Birth', 'Roll No.', 'Enrolment Number', 'Course Name (Hindi)', 
+      'Course Name (English)', 'Course Year (Hindi)', 'Course Year (English)', 
+      "Candidate's Name (Hindi)", "Father's Name (Hindi)", "Candidate's Name (English)", 
+      "Father's Name (English)", 'Duration (Hindi)', 'Duration (English)', 'Mode (Hindi)', 
+      'Mode (English)', 'IA Sub Code', 'ME Sub Code', 'IA Max Mark', 'ME Max Mark', 
+      'Maximum Marks', 'Obtained IA Marks', 'Obtained ME Marks', 'Obtained Marks Total', 
+      'Result Remark (Hindi)', 'Result Remark (English)', 'Date of Result (Hindi)', 
+      'Date of Result (English)', 'Subject Code', 'Academic Year', 'Course Name', 
+      'Exam Flag', 'Part', 'Semester'
     ];
     
     const rows = previewData.results.map(r => [
-      r.rollNo,
-      r.enrolmentNo,
-      r.candidateNameEnglish,
-      r.fatherNameEnglish,
-      r.iaMarks,
-      r.meMarks,
-      r.marksTotal,
-      r.resultRemarkEnglish || '',
-      r.resultRemarkHindi || ''
+      r.sNo || '', r.dateOfBirth || '', r.rollNo || '', r.enrolmentNo || '', r.courseNameHindi || '',
+      r.courseNameEnglish || '', r.courseYearHindi || '', r.courseYearEnglish || '',
+      r.candidateNameHindi || '', r.fatherNameHindi || '', r.candidateNameEnglish || '',
+      r.fatherNameEnglish || '', r.durationHindi || '', r.durationEnglish || '', r.modeHindi || '',
+      r.modeEnglish || '', r.iaSubCode || '', r.meSubCode || '', r.iaMaxMarks || 0, r.meMaxMarks || 0,
+      r.maxMarks || 0, r.iaMarks || 0, r.meMarks || 0, r.marksTotal || 0,
+      r.resultRemarkHindi || '', r.resultRemarkEnglish || '', r.dateOfResultHindi || '',
+      r.dateOfResultEnglish || '', r.subjectCode || '', r.academicYear || '', r.courseName || '',
+      r.examFlag || '', r.part || '', r.semester || ''
     ]);
 
     const csvContent = [
@@ -405,19 +456,30 @@ const AdminDashboard = () => {
   };
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
-      {/* Sidebar */}
-      <aside 
-        className={`${
-          isSidebarOpen ? 'w-72' : 'w-20'
-        } bg-white border-r transition-all duration-300 flex flex-col z-40`}
-      >
-        <div className="p-6 flex items-center justify-between">
-          {isSidebarOpen && <h1 className="text-xl font-bold text-blue-600">Admin Panel</h1>}
-          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-1.5 rounded-lg hover:bg-gray-100">
-            {isSidebarOpen ? <XMarkIcon className="w-6 h-6" /> : <Bars3Icon className="w-6 h-6" />}
-          </button>
-        </div>
+    <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
+      {/* Top Navbar */}
+      <nav className="bg-gray-900 text-white flex items-center justify-between px-6 py-3 z-40 shadow-md flex-wrap gap-2">
+          <h1 className="text-lg font-bold text-white whitespace-nowrap">Admin Panel</h1>
+          
+          {/* Segmented Flow Toggle */}
+          <div className="flex bg-gray-800 p-1 rounded-lg border border-gray-700">
+            <button
+              onClick={() => setActiveFlow('results')}
+              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
+                activeFlow === 'results' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Student Results
+            </button>
+            <button
+              onClick={() => setActiveFlow('diplomas')}
+              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
+                activeFlow === 'diplomas' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Diploma Certificates
+            </button>
+          </div>
 
         <nav className="flex-1 px-4 space-y-2 mt-4">
           <SidebarItem 
@@ -473,15 +535,17 @@ const AdminDashboard = () => {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Header />
         <div className="flex-1 overflow-auto p-8">
           <div className="max-w-7xl mx-auto">
-            {activeTab === 'upload' && (
-              <div className="bg-white p-8 rounded-2xl shadow-sm max-w-2xl border">
+            {activeFlow === 'results' ? (
+              <>
+                {activeTab === 'upload' && (
+              <div className="bg-white p-8 rounded-2xl shadow-sm border">
                 <div className="flex justify-between items-start mb-6">
                   <div>
-                    <h2 className="text-2xl font-bold text-gray-800">Upload New Batch</h2>
+                    <h2 className="text-2xl font-bold text-gray-800">Upload Student Records</h2>
                     <p className="text-gray-500">Create a new student result batch by uploading a CSV or Excel file.</p>
                   </div>
                   <a 
@@ -495,7 +559,7 @@ const AdminDashboard = () => {
                 </div>
                 <form onSubmit={handleUpload} className="space-y-6">
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Subject Name</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Programme Name</label>
                     <input 
                       type="text" 
                       value={subject} 
@@ -520,7 +584,7 @@ const AdminDashboard = () => {
                     </div>
                   </div>
                   <button type="submit" className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 transform active:scale-[0.98] transition-all shadow-lg shadow-blue-200">
-                    Create Draft Batch
+                    Upload Student Records
                   </button>
                 </form>
               </div>
@@ -684,7 +748,7 @@ const AdminDashboard = () => {
             {activeTab === 'pending' && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-2xl font-bold text-gray-800">Pending Approvals</h2>
+                  <h2 className="text-2xl font-bold text-gray-800">Result Approval</h2>
                   <span className="bg-yellow-100 text-yellow-700 px-4 py-1.5 rounded-full text-sm font-bold">
                     {pendingBatches.length} Awaiting Review
                   </span>
@@ -696,6 +760,7 @@ const AdminDashboard = () => {
                         <th className="p-4 text-xs font-bold text-gray-500 uppercase">Batch Info</th>
                         <th className="p-4 text-xs font-bold text-gray-500 uppercase">Assigned Teacher</th>
                         <th className="p-4 text-xs font-bold text-gray-500 uppercase text-center">Students</th>
+                        <th className="p-4 text-xs font-bold text-gray-500 uppercase">Date</th>
                         <th className="p-4 text-xs font-bold text-gray-500 uppercase text-right">Action</th>
                       </tr>
                     </thead>
@@ -715,6 +780,9 @@ const AdminDashboard = () => {
                             </div>
                           </td>
                           <td className="p-4 text-center text-gray-600">{batch.studentCount}</td>
+                          <td className="p-4 text-gray-500">
+                            {batch.submittedAt ? new Date(batch.submittedAt).toLocaleDateString() : '—'}
+                          </td>
                           <td className="p-4">
                             <div className="flex justify-end gap-2">
                               <button onClick={() => fetchPreview(batch._id)} className="px-4 py-2 text-sm font-bold bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">Preview</button>
@@ -726,7 +794,7 @@ const AdminDashboard = () => {
                       ))}
                       {pendingBatches.length === 0 && (
                         <tr>
-                          <td colSpan="4" className="p-12 text-center text-gray-400">No batches pending approval</td>
+                          <td colSpan="5" className="p-12 text-center text-gray-400">No batches Result Approval</td>
                         </tr>
                       )}
                     </tbody>
@@ -985,16 +1053,271 @@ const AdminDashboard = () => {
                         <label className="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1">Email Address</label>
                         <input type="email" placeholder="john@example.com" value={newTeacher.email} onChange={(e) => setNewTeacher({...newTeacher, email: e.target.value})} className="w-full border-gray-100 bg-gray-50 border p-3 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" required />
                       </div>
-                      <div>
-                        <label className="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1">Password</label>
-                        <input type="password" placeholder="••••••••" value={newTeacher.password} onChange={(e) => setNewTeacher({...newTeacher, password: e.target.value})} className="w-full border-gray-100 bg-gray-50 border p-3 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" required />
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm overflow-hidden border">
+                       <table className="w-full text-left">
+                        <thead className="bg-gray-50 border-b">
+                          <tr>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Batch Info</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Assigned Teacher</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase text-center">Students</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Date</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase text-center">Status</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {approvedBatches
+                            .filter(b => publishedFilter === 'all' || b.status === publishedFilter)
+                            .map(batch => (
+                            <tr
+                              key={batch._id}
+                              className={`transition-colors ${
+                                batch.status === 'disapproved'
+                                  ? 'bg-red-50/60 hover:bg-red-50'
+                                  : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              <td className="p-4">
+                                <p className="font-bold text-gray-800">{batch.batchName?.split(' - ')[0] ?? batch.batchName}</p>
+                                <p className="text-xs text-gray-400">{batch.subject}</p>
+                              </td>
+                              <td className="p-4">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${batch.status === 'disapproved' ? 'bg-red-100 text-red-600' : 'bg-blue-50 text-blue-600'}`}>
+                                    {batch.teacher.name[0]}
+                                  </div>
+                                  <span className="text-gray-700">{batch.teacher.name}</span>
+                                </div>
+                              </td>
+                              <td className="p-4 text-center text-gray-600">{batch.studentCount}</td>
+                              <td className="p-4 text-gray-500">
+                                {(() => {
+                                  const d = batch.status === 'disapproved'
+                                    ? batch.disapprovedAt || batch.approvedAt || batch.submittedAt || batch.createdAt
+                                    : batch.approvedAt || batch.submittedAt || batch.createdAt;
+                                  return d ? new Date(d).toLocaleDateString() : '—';
+                                })()}
+                              </td>
+                              <td className="p-4 text-center">
+                                {batch.status === 'disapproved' ? (
+                                  <span className="inline-flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase tracking-widest border bg-red-50 text-red-700 border-red-200 rounded-full">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block" />
+                                    Disapproved
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase tracking-widest border bg-emerald-50 text-emerald-700 border-emerald-200 rounded-full">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                                    Approved
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-4">
+                                <div className="flex justify-end gap-2 items-center">
+                                  <button
+                                    onClick={() => fetchPreview(batch._id)}
+                                    className="text-blue-500 hover:text-blue-700 p-1.5 hover:bg-blue-50 rounded-lg transition-all"
+                                    title="Preview Results"
+                                  >
+                                    <EyeIcon className="w-5 h-5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleManagePhotos(batch)}
+                                    className="text-orange-500 hover:text-orange-700 p-1.5 hover:bg-orange-50 rounded-lg transition-all"
+                                    title="Manage Photographs"
+                                  >
+                                    <PhotoIcon className="w-5 h-5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteApproved(batch._id)}
+                                    className="text-red-500 hover:text-red-700 p-1.5 hover:bg-red-50 rounded-lg transition-all"
+                                    title="Delete Batch"
+                                  >
+                                    <TrashIcon className="w-5 h-5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                          {approvedBatches.filter(b => publishedFilter === 'all' || b.status === publishedFilter).length === 0 && (
+                            <tr>
+                              <td colSpan="6" className="p-12 text-center text-gray-400">No Published Results found</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-6 animate-in slide-in-from-right duration-300">
+                    <div className="flex items-center justify-between">
+                      <button 
+                        onClick={() => setSelectedPhotoBatch(null)}
+                        className="flex items-center gap-2 text-gray-500 hover:text-blue-600 font-bold transition-colors"
+                      >
+                        <ArrowLeftOnRectangleIcon className="w-5 h-5 rotate-180" />
+                        Back to Approved
+                      </button>
+                      <h2 className="text-2xl font-black text-gray-800 tracking-tight">{selectedPhotoBatch.subject}</h2>
+                      <div className="bg-blue-50 text-blue-600 px-4 py-1.5 rounded-full text-xs font-bold border border-blue-100">
+                        {selectedPhotoBatch.results.length} Students
                       </div>
-                      <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-md">Create Account</button>
-                    </form>
+                    </div>
+
+                    <div className="bg-white rounded-2xl shadow-xl border overflow-hidden">
+                      <table className="w-full text-left">
+                        <thead className="bg-gray-800 text-white">
+                          <tr>
+                            <th className="p-5 text-sm font-bold uppercase tracking-wider">Student Name</th>
+                            <th className="p-5 text-sm font-bold uppercase tracking-wider text-center">Roll Number</th>
+                            <th className="p-5 text-sm font-bold uppercase tracking-wider text-right">Upload Photograph</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {selectedPhotoBatch.results.map(r => (
+                            <tr key={r._id} className="hover:bg-gray-50/80 transition-colors">
+                              <td className="p-5">
+                                <div className="flex items-center gap-4">
+                                  {r.student?.profileImageId ? (
+                                    <img 
+                                      src={r.student.profileImageId} 
+                                      className="w-10 h-10 rounded-full object-cover ring-2 ring-blue-100 shadow-sm" 
+                                      alt="" 
+                                    />
+                                  ) : (
+                                    <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-400 border-2 border-dashed border-gray-200">
+                                      <PhotoIcon className="w-5 h-5" />
+                                    </div>
+                                  )}
+                                  <div>
+                                    <p className="font-bold text-gray-800">{r.candidateNameEnglish}</p>
+                                    <p className="text-[10px] text-gray-400 uppercase font-black">{r.enrolmentNo}</p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="p-5 text-center font-mono font-bold text-blue-600 bg-blue-50/30">
+                                {r.rollNo}
+                              </td>
+                              <td className="p-5 text-right">
+                                <span className="inline-flex items-center gap-1 text-gray-500 font-bold text-sm bg-gray-100 px-4 py-2 rounded-lg cursor-not-allowed">
+                                  <LockClosedIcon className="w-4 h-4" />
+                                  Locked (Published)
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'photos' && (
+              <div className="space-y-6">
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-800">Student Photographs</h2>
+                    <p className="text-gray-500">Manage profile pictures for all registered students.</p>
+                  </div>
+                  <div className="relative">
+                    <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input 
+                      type="text" 
+                      placeholder="Search name or email..." 
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-10 pr-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 w-64 transition-all"
+                    />
                   </div>
                 </div>
 
-                <div className="lg:col-span-2">
+                <div className="bg-white rounded-2xl shadow-sm overflow-hidden border">
+                  <table className="w-full text-left">
+                    <thead className="bg-gray-50 border-b">
+                      <tr>
+                        <th className="p-4 text-xs font-bold text-gray-500 uppercase">Student</th>
+                        <th className="p-4 text-xs font-bold text-gray-500 uppercase">Roll No</th>
+                        <th className="p-4 text-xs font-bold text-gray-500 uppercase text-center">Status</th>
+                        <th className="p-4 text-xs font-bold text-gray-500 uppercase text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {students
+                        .filter(s => 
+                          s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          s.email.toLowerCase().includes(searchQuery.toLowerCase())
+                        )
+                        .map(student => (
+                        <tr key={student._id} className="hover:bg-gray-50 transition-colors">
+                          <td className="p-4">
+                            <div className="flex items-center gap-4">
+                              {student.profileImageId ? (
+                                <img 
+                                  src={student.profileImageId} 
+                                  alt="" 
+                                  className="w-12 h-12 rounded-lg object-cover border"
+                                />
+                              ) : (
+                                <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400">
+                                  <PhotoIcon className="w-6 h-6" />
+                                </div>
+                              )}
+                              <div>
+                                <p className="font-bold text-gray-800">{student.name}</p>
+                                <p className="text-xs text-gray-400 uppercase font-bold tracking-wider">Student ID: {student._id.slice(-6)}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            <p className="text-sm font-medium text-gray-700">{student.rollNo || 'Not Assigned'}</p>
+                          </td>
+                          <td className="p-4 text-center">
+                            {student.profileImageId ? (
+                              <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-[10px] font-bold">HAS PHOTO</span>
+                            ) : (
+                              <span className="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-[10px] font-bold">MISSING</span>
+                            )}
+                          </td>
+                          <td className="p-4 text-right">
+                            {student.hasApprovedResult && student.profileImageId ? (
+                               <span className="inline-flex items-center gap-1 text-gray-500 font-bold text-sm bg-gray-100 px-4 py-2 rounded-lg cursor-not-allowed">
+                                 <LockClosedIcon className="w-4 h-4" />
+                                 Locked (Published)
+                               </span>
+                            ) : (
+                              <label className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-bold transition-all inline-block shadow-sm ${student.profileImageId ? 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 shadow-sm' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200'}`}>
+                                {student.profileImageId ? 'Change Photo' : 'Upload Photo'}
+                                <input 
+                                  type="file" 
+                                  className="hidden" 
+                                  accept="image/*"
+                                  onChange={(e) => {
+                                    if (e.target.files?.[0]) {
+                                      handlePhotoUpload(student._id, e.target.files[0]);
+                                    }
+                                  }}
+                                />
+                              </label>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {students.length === 0 && (
+                        <tr>
+                          <td colSpan="4" className="p-12 text-center text-gray-400">No students found</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'teachers' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div className="lg:col-span-2 lg:order-1">
                   <div className="bg-white rounded-2xl shadow-sm overflow-hidden border">
                     <table className="w-full text-left">
                       <thead className="bg-gray-50 border-b">
@@ -1028,7 +1351,234 @@ const AdminDashboard = () => {
                     </table>
                   </div>
                 </div>
+
+                <div className="lg:col-span-1 lg:order-2">
+                  <div className="bg-white rounded-2xl shadow-sm border sticky top-8 overflow-hidden">
+                    <button
+                      onClick={() => setIsRegisterOpen(!isRegisterOpen)}
+                      className="w-full flex items-center justify-between p-6 text-left"
+                    >
+                      <h2 className="text-xl font-bold text-gray-800">Register Teacher</h2>
+                      <span className={`transform transition-transform duration-200 text-gray-400 ${isRegisterOpen ? 'rotate-180' : ''}`}>▼</span>
+                    </button>
+                    {isRegisterOpen && (
+                      <form onSubmit={handleAddTeacher} className="space-y-4 px-6 pb-6">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1">Full Name</label>
+                          <input type="text" placeholder="John Doe" value={newTeacher.name} onChange={(e) => setNewTeacher({...newTeacher, name: e.target.value})} className="w-full border-gray-100 bg-gray-50 border p-3 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" required />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1">Email Address</label>
+                          <input type="email" placeholder="john@example.com" value={newTeacher.email} onChange={(e) => setNewTeacher({...newTeacher, email: e.target.value})} className="w-full border-gray-100 bg-gray-50 border p-3 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" required />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1">Password</label>
+                          <input type="password" placeholder="••••••••" value={newTeacher.password} onChange={(e) => setNewTeacher({...newTeacher, password: e.target.value})} className="w-full border-gray-100 bg-gray-50 border p-3 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all" required />
+                        </div>
+                        <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-md">Create Account</button>
+                      </form>
+                    )}
+                  </div>
+                </div>
               </div>
+            )}
+              </>
+            ) : (
+              <>
+                {activeDiplomaTab === 'upload_diploma' && (
+                  <div className="bg-white p-8 rounded-2xl shadow-sm border">
+                    <div className="flex justify-between items-start mb-6">
+                      <div>
+                        <h2 className="text-2xl font-bold text-gray-800">Upload Diploma Certificates</h2>
+                        <p className="text-gray-500">Create new verified diplomas by uploading a CSV file.</p>
+                      </div>
+                    </div>
+                    <form onSubmit={handleDiplomaUploadSubmit} className="space-y-6">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">CSV File</label>
+                        <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-blue-400 transition-all cursor-pointer relative">
+                          <input 
+                            type="file" 
+                            onChange={(e) => setDiplomaFile(e.target.files[0])} 
+                            className="absolute inset-0 opacity-0 cursor-pointer" 
+                            accept=".csv" 
+                          />
+                          <CloudArrowUpIcon className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                          <p className="text-sm text-gray-600">
+                            {diplomaFile ? <span className="text-blue-600 font-bold">{diplomaFile.name}</span> : "Click or drag to upload Diploma CSV"}
+                          </p>
+                        </div>
+                      </div>
+                      <button type="submit" className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 transform active:scale-[0.98] transition-all shadow-lg">
+                        Upload Diploma Records
+                      </button>
+                    </form>
+
+                    {diplomaUploadResult && (
+                      <div className="mt-8 p-6 bg-gray-50 border rounded-xl">
+                        <h3 className="text-lg font-bold text-gray-800 mb-2">Upload Report</h3>
+                        <div className="flex gap-4 mb-4">
+                          <span className="bg-green-100 text-green-800 px-3 py-1 rounded text-xs font-bold">Processed: {diplomaUploadResult.processedCount}</span>
+                          <span className="bg-red-100 text-red-800 px-3 py-1 rounded text-xs font-bold">Failed: {diplomaUploadResult.failedCount}</span>
+                        </div>
+                        {diplomaUploadResult.errors && diplomaUploadResult.errors.length > 0 && (
+                          <div className="max-h-60 overflow-y-auto border border-red-200 bg-red-50 rounded-xl p-4 space-y-2">
+                            {diplomaUploadResult.errors.map((err, idx) => (
+                              <p key={idx} className="text-xs text-red-700 font-medium">
+                                <b>Row {err.row} (Roll No: {err.rollNo}):</b> {err.error}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {activeDiplomaTab === 'list_diploma' && (
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center mb-6">
+                      <div>
+                        <h2 className="text-2xl font-bold text-gray-800">Diploma Certificates</h2>
+                        <p className="text-gray-500">Manage and preview generated student diplomas.</p>
+                      </div>
+                      <a 
+                        href={`${API_URL}/api/diplomas/bulk-download?t=${Date.now()}`}
+                        download
+                        className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-blue-700 shadow-md flex items-center gap-2 text-sm border"
+                      >
+                        <CloudArrowUpIcon className="w-5 h-5" />
+                        Download Bulk ZIP
+                      </a>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm overflow-hidden border">
+                      <table className="w-full text-left">
+                        <thead className="bg-gray-50 border-b">
+                          <tr>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Roll Number</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Student Name</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Course Name</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Semester</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase">Certificate No</th>
+                            <th className="p-4 text-xs font-bold text-gray-500 uppercase text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {diplomasList.map((cert) => (
+                            <tr key={cert._id} className="hover:bg-gray-50 transition-colors">
+                              <td className="p-4 font-mono font-bold text-sm text-gray-800">{cert.rollNo}</td>
+                              <td className="p-4 font-bold text-gray-800">{cert.candidateName}</td>
+                              <td className="p-4 text-gray-600 text-sm">{cert.courseName}</td>
+                              <td className="p-4 text-gray-600 text-sm">{cert.semester}</td>
+                              <td className="p-4 font-mono text-xs text-blue-600 font-bold">{cert.certificateNo}</td>
+                              <td className="p-4 text-right">
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    onClick={() => setSelectedDiploma(cert)}
+                                    className="text-blue-500 hover:text-blue-700 p-1.5 hover:bg-blue-50 rounded-lg transition-all"
+                                    title="Preview Certificate"
+                                  >
+                                    <EyeIcon className="w-5 h-5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteDiploma(cert._id)}
+                                    className="text-red-500 hover:text-red-700 p-1.5 hover:bg-red-50 rounded-lg transition-all"
+                                    title="Delete Certificate"
+                                  >
+                                    <TrashIcon className="w-5 h-5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                          {diplomasList.length === 0 && (
+                            <tr>
+                              <td colSpan="6" className="p-12 text-center text-gray-400">No Diploma Certificates generated yet.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {activeDiplomaTab === 'signature_settings' && (
+                  <div className="bg-white p-8 rounded-2xl shadow-sm border max-w-2xl">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-2">Authorized Signature</h2>
+                    <p className="text-gray-500 mb-8">Manage the signature rendered on all diploma certificates.</p>
+
+                    {/* Current Signature Display */}
+                    <div className="mb-8 p-6 bg-gray-50 border rounded-2xl">
+                      <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Active Signature</h3>
+                      {activeSignature ? (
+                        <div className="space-y-4">
+                          <div className="border bg-white p-4 rounded-xl flex items-center justify-center h-32 w-64 shadow-inner">
+                            <img 
+                              src={`${API_URL}/${activeSignature.filePath.replace(/^uploads\//, '')}`} 
+                              alt="Active Signature" 
+                              className="max-h-full max-w-full object-contain" 
+                            />
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold text-gray-800">Designation: <span className="text-gray-600 font-normal">{activeSignature.signatoryLabel}</span></p>
+                            <p className="text-xs text-gray-400">Uploaded at: {new Date(activeSignature.uploadedAt).toLocaleString()}</p>
+                          </div>
+                          <button 
+                            type="button" 
+                            onClick={() => handleDeactivateSignature(activeSignature._id)}
+                            className="bg-red-50 text-red-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100 transition-colors"
+                          >
+                            Deactivate Signature
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="text-center py-6 text-gray-400 text-sm">
+                          No active signature uploaded. Certs will display empty space.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Signature Upload Form */}
+                    <form onSubmit={handleSignatureUploadSubmit} className="space-y-6">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Upload PNG Signature</label>
+                        <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-blue-400 transition-all cursor-pointer relative">
+                          <input 
+                            type="file" 
+                            onChange={(e) => setSignatureFile(e.target.files[0])} 
+                            className="absolute inset-0 opacity-0 cursor-pointer" 
+                            accept="image/png" 
+                          />
+                          <CloudArrowUpIcon className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                          <p className="text-sm text-gray-600">
+                            {signatureFile ? (
+                              <span className="text-blue-600 font-bold">{signatureFile.name}</span>
+                            ) : (
+                              "Click or drag to select a PNG signature file"
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-400 mt-2">Only transparent background PNG images are recommended</p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Signatory Designation / Label</label>
+                        <input 
+                          type="text" 
+                          value={signatoryLabel}
+                          onChange={(e) => setSignatoryLabel(e.target.value)}
+                          placeholder="e.g. O.S.D. (Examination)"
+                          className="w-full border p-3 rounded-xl bg-gray-50 outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition-all"
+                        />
+                      </div>
+
+                      <button type="submit" className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-md">
+                        {activeSignature ? "Replace Active Signature" : "Upload Active Signature"}
+                      </button>
+                    </form>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1072,12 +1622,14 @@ const AdminDashboard = () => {
                   <CloudArrowUpIcon className="w-5 h-5" />
                   Export CSV
                 </button>
-                <button 
-                  onClick={handleSavePreviewEdits} 
-                  className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-100 transition-all"
-                >
-                  Save Changes
-                </button>
+                {activeTab !== 'approved' && activeTab !== 'pending' && (
+                  <button 
+                    onClick={handleSavePreviewEdits} 
+                    className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-100 transition-all"
+                  >
+                    Save Changes
+                  </button>
+                )}
                 <button 
                   onClick={() => setPreviewData(null)} 
                   className="p-2 rounded-full hover:bg-gray-100 transition-colors"
@@ -1179,18 +1731,20 @@ const AdminDashboard = () => {
                         <td className="p-2 border-r text-center text-gray-500 font-bold">{r.maxMarks}</td>
                         <td className="p-1 border-r bg-blue-50/20">
                           <input 
-                            type="number" 
-                            value={r.iaMarks} 
+                            type="text" 
+                            value={r.iaMarks ?? ''} 
                             onChange={(e) => handlePreviewMarkChange(r._id, 'iaMarks', e.target.value)}
-                            className="w-full text-center border-gray-200 border rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500 outline-none transition-all bg-white"
+                            disabled={r.iaMarks !== null && r.iaMarks !== undefined && r.iaMarks !== ''}
+                            className={`w-full text-center border-gray-200 border rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500 outline-none transition-all font-mono ${r.iaMarks !== null && r.iaMarks !== undefined && r.iaMarks !== '' ? 'bg-gray-100 cursor-not-allowed text-gray-500' : 'bg-white'}`}
                           />
                         </td>
                         <td className="p-1 border-r bg-blue-50/20">
                           <input 
-                            type="number" 
-                            value={r.meMarks} 
+                            type="text" 
+                            value={r.meMarks ?? ''} 
                             onChange={(e) => handlePreviewMarkChange(r._id, 'meMarks', e.target.value)}
-                            className="w-full text-center border-gray-200 border rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500 outline-none transition-all bg-white"
+                            disabled={r.meMarks !== null && r.meMarks !== undefined && r.meMarks !== ''}
+                            className={`w-full text-center border-gray-200 border rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500 outline-none transition-all font-mono ${r.meMarks !== null && r.meMarks !== undefined && r.meMarks !== '' ? 'bg-gray-100 cursor-not-allowed text-gray-500' : 'bg-white'}`}
                           />
                         </td>
                         <td className="p-2 border-r text-center font-bold text-blue-600 bg-blue-50/50">{r.marksTotal}</td>
@@ -1199,7 +1753,8 @@ const AdminDashboard = () => {
                             type="text" 
                             value={r.resultRemarkEnglish || ''} 
                             onChange={(e) => handlePreviewRemarkChange(r._id, 'resultRemarkEnglish', e.target.value)}
-                            className="w-full border-gray-200 border rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500 outline-none transition-all bg-white"
+                            disabled={true}
+                            className={`w-full border-gray-200 border rounded-lg p-1.5 outline-none transition-all bg-gray-100 text-gray-500 cursor-not-allowed`}
                           />
                         </td>
                         <td className="p-1 border-r bg-blue-50/20">
@@ -1207,7 +1762,8 @@ const AdminDashboard = () => {
                             type="text" 
                             value={r.resultRemarkHindi || ''} 
                             onChange={(e) => handlePreviewRemarkChange(r._id, 'resultRemarkHindi', e.target.value)}
-                            className="w-full border-gray-200 border rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500 outline-none transition-all bg-white"
+                            disabled={true}
+                            className={`w-full border-gray-200 border rounded-lg p-1.5 outline-none transition-all bg-gray-100 text-gray-500 cursor-not-allowed`}
                           />
                         </td>
                         <td className="p-2 border-r text-gray-500 whitespace-nowrap">{r.dateOfResultEnglish}</td>
@@ -1242,6 +1798,31 @@ const AdminDashboard = () => {
             <div className="flex gap-3">
               <button onClick={handleChangePassword} className="flex-1 bg-blue-600 text-white py-3.5 rounded-xl font-bold hover:bg-blue-700">Update Password</button>
               <button onClick={() => setIsPasswordModalOpen(false)} className="flex-1 bg-gray-100 text-gray-600 py-3.5 rounded-xl font-bold hover:bg-gray-200">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedDiploma && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 z-[70] overflow-y-auto">
+          <div className="bg-white rounded-xl w-full max-h-[95vh] overflow-y-auto mx-auto shadow-2xl" style={{ maxWidth: 'min(95vw, 1000px)' }}>
+            <div className="sticky top-0 bg-white border-b border-gray-100 p-4 sm:p-5 z-50 flex flex-col sm:flex-row justify-between items-center gap-4">
+              <h3 className="text-lg font-bold text-gray-800">Diploma Preview</h3>
+              <div className="flex gap-3">
+                <button onClick={() => handlePrintDiploma()}
+                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2 shadow-sm transition-colors text-sm font-bold">
+                  Print Preview
+                </button>
+                <button onClick={() => setSelectedDiploma(null)}
+                  className="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors text-sm font-bold">
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="flex justify-center bg-gray-50 overflow-auto p-4">
+              <div ref={diplomaCertRef} className="bg-white">
+                <DiplomaCertificateTemplate certificateData={selectedDiploma} />
+              </div>
             </div>
           </div>
         </div>
